@@ -9,10 +9,11 @@
 This module allows you to integrate the **iPay.ua payment gateway (API 3.02)** into your OpenCart or ocStore e-commerce website (version 3.x).
 
 🔗 [Developer: flancer.eu](https://flancer.eu)  
-👤 [Contact on LinkedIn](https://www.linkedin.com/in/butuzoff/)
+👤 [Contact on LinkedIn](https://www.linkedin.com/in/butuzoff/)  
 💬 [Telegram @butuzoff](https://t.me/butuzoff)
 
 ---
+
 
 ## 🇺🇦 Українська версія
 
