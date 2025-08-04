@@ -1,0 +1,53 @@
+# Запрет всех скрытых файлов
+.*
+!.gitignore
+!.htaccess
+!.editorconfig
+
+# Системные файлы
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Временные файлы
+*.log
+*.cache
+*.diff
+*.err
+*.orig
+*.rej
+*.swo
+*.swp
+*.vi
+*~
+
+# Папки OpenCart для исключения
+/system/storage/cache/
+/system/storage/logs/
+/system/storage/download/
+/system/storage/upload/
+/system/storage/modification/
+/image/cache/
+/image/catalog/
+
+# Файлы конфигурации
+/config.php
+/admin/config.php
+
+# Пользовательские файлы
+/upload/image/data/
+/upload/image/cache/
+/upload/system/storage/
+
+# Файлы IDE и редакторов
+/.idea/
+/.vscode/
+/nbproject/
+*.sublime-project
+*.sublime-workspace
+
+# Файлы зависимостей
+/node_modules/
+/vendor/
+/composer.lock
+/package-lock.json
