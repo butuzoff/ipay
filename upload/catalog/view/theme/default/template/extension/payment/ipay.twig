@@ -1,27 +1,104 @@
-<div class="buttons">
-  <div class="pull-right">
-    <input type="button" value="{{ button_confirm }}" id="button-confirm" data-loading-text="{{ text_loading }}" class="btn btn-primary" />
+<div class="ipay-payment-form">
+  <div class="payment-info">
+    <div class="payment-logo">
+      <img src="image/paymennt/ipay.png" alt="iPay.ua" style="height: 40px; margin-bottom: 10px;" />
+    </div>
+    <p class="text-muted">{{ text_please_wait }}</p>
+  </div>
+  
+  <div class="buttons">
+    <div class="pull-right">
+      <input type="button" value="{{ button_confirm }}" id="button-confirm" 
+             data-loading-text="{{ text_loading }}" class="btn btn-primary btn-lg" />
+    </div>
   </div>
 </div>
+
 <script type="text/javascript"><!--
-$('#button-confirm').on('click', function() {
-  $.ajax({
-    url: 'index.php?route=extension/payment/ipay/confirm',
-    dataType: 'json',
-    beforeSend: function() {
-      $('#button-confirm').button('loading');
-    },
-    complete: function() {
-      $('#button-confirm').button('reset');
-    },
-    success: function(json) {
-      if (json['redirect']) {
-        location = json['redirect'];  
+$(document).ready(function() {
+  $('#button-confirm').on('click', function() {
+    var $btn = $(this);
+    
+    $.ajax({
+      url: 'index.php?route=extension/payment/ipay/confirm',
+      type: 'POST',
+      dataType: 'json',
+      cache: false,
+      beforeSend: function() {
+        $btn.button('loading').prop('disabled', true);
+      },
+      complete: function() {
+        $btn.button('reset').prop('disabled', false);
+      },
+      success: function(json) {
+        if (json['error']) {
+          // Показываем ошибку в более удобном формате
+          if (typeof json['error'] === 'string') {
+            alert('{{ error_api }}: ' + json['error']);
+          } else {
+            alert('{{ error_gateway }}');
+          }
+        }
+        
+        if (json['redirect']) {
+          // Показываем сообщение о перенаправлении
+          $btn.val('{{ text_redirecting }}');
+          setTimeout(function() {
+            window.location.href = json['redirect'];
+          }, 500);
+        }
+      },
+      error: function(xhr, ajaxOptions, thrownError) {
+        console.error('iPay AJAX Error:', {
+          status: xhr.status,
+          statusText: xhr.statusText,
+          response: xhr.responseText,
+          error: thrownError
+        });
+        
+        var errorMsg = '{{ error_gateway }}';
+        if (xhr.status === 0) {
+          errorMsg = 'Нет соединения с сервером';
+        } else if (xhr.status === 500) {
+          errorMsg = 'Внутренняя ошибка сервера';
+        } else if (xhr.status === 404) {
+          errorMsg = 'Платежный модуль не найден';
+        }
+        
+        alert(errorMsg);
       }
-    },
-    error: function(xhr, ajaxOptions, thrownError) {
-      alert(thrownError + "\r\n" + xhr.statusText + "\r\n" + xhr.responseText);
-    }
+    });
   });
 });
 //--></script>
+
+<style>
+.ipay-payment-form {
+  text-align: center;
+  padding: 20px;
+}
+
+.payment-info {
+  margin-bottom: 20px;
+}
+
+.payment-logo img {
+  max-width: 100%;
+  height: auto;
+}
+
+#button-confirm {
+  min-width: 200px;
+  font-weight: bold;
+}
+
+@media (max-width: 768px) {
+  .ipay-payment-form {
+    padding: 10px;
+  }
+  
+  #button-confirm {
+    width: 100%;
+  }
+}
+</style>

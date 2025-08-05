@@ -1,18 +1,16 @@
 <?php
 /**
  * Контроллер оплаты iPay для OpenCart 3.x
- * Полностью соответствует официальной документации iPay API v1.14
  * 
  * @author flancer.eu
- * @version 2.0.0
+ * @version 1.0.0
  * @license MIT
- * @see https://checkout.ipay.ua/doc
  */
 class ControllerExtensionPaymentIpay extends Controller {
     // Режим отладки - включите для логирования дополнительной информации
     const IPAY_DEBUG_MODE = false;
     
-    // API URL-адреса iPay согласно документации
+    // API URL-адреса iPay
     const IPAY_API_URL = 'https://checkout.ipay.ua/api302';
     const IPAY_SANDBOX_API_URL = 'https://sandbox-checkout.ipay.ua/api302';
     
@@ -20,7 +18,7 @@ class ControllerExtensionPaymentIpay extends Controller {
     const CURL_CONNECT_TIMEOUT = 10;
     const CURL_TIMEOUT = 30;
     
-    // Поддерживаемые валюты согласно документации
+    // Поддерживаемые валюты
     const SUPPORTED_CURRENCIES = ['UAH', 'USD', 'EUR'];
     
     // Минимальная сумма платежа в копейках
@@ -30,10 +28,6 @@ class ControllerExtensionPaymentIpay extends Controller {
         $this->load->language('extension/payment/ipay');
         $data['button_confirm'] = $this->language->get('button_confirm');
         $data['text_loading'] = $this->language->get('text_loading');
-        $data['text_please_wait'] = $this->language->get('text_please_wait');
-        $data['text_redirecting'] = $this->language->get('text_redirecting');
-        $data['error_api'] = $this->language->get('error_api');
-        $data['error_gateway'] = $this->language->get('error_gateway');
         return $this->load->view('extension/payment/ipay', $data);
     }
 
@@ -44,19 +38,17 @@ class ControllerExtensionPaymentIpay extends Controller {
         $json = array();
 
         if (!isset($this->session->data['order_id'])) {
-            $json['error'] = $this->language->get('error_session');
+            $json['error'] = 'Ошибка сессии: ID заказа не найден.';
         } else {
             $order_id = $this->session->data['order_id'];
             $order_info = $this->model_checkout_order->getOrder($order_id);
 
             if ($order_info) {
-                // Подготавливаем данные для запроса к iPay API
+                // Prepare data for iPay API request
                 $mch_id = $this->config->get('payment_ipay_mch_id');
                 $sign_key = $this->config->get('payment_ipay_mch_key');
                 $is_test_mode = $this->config->get('payment_ipay_test_mode');
                 $api_url = $is_test_mode ? self::IPAY_SANDBOX_API_URL : self::IPAY_API_URL;
-                
-                // Конвертируем сумму в копейки
                 $order_total = $order_info['total'];
                 $total_in_default_currency = $this->currency->convert($order_total, $order_info['currency_code'], $this->config->get('config_currency'));
                 $amount = (int)round($total_in_default_currency * 100);
@@ -64,7 +56,7 @@ class ControllerExtensionPaymentIpay extends Controller {
                 // Определяем валюту платежа
                 $currency = $this->getCurrency($order_info['currency_code']);
                 if (!$currency) {
-                    $json['error'] = $this->language->get('error_currency') . ': ' . $order_info['currency_code'];
+                    $json['error'] = 'Валюта ' . $order_info['currency_code'] . ' не поддерживается';
                     $this->response->addHeader('Content-Type: application/json');
                     $this->response->setOutput(json_encode($json));
                     return;
@@ -72,7 +64,7 @@ class ControllerExtensionPaymentIpay extends Controller {
                 
                 // Валидируем сумму платежа
                 if ($amount < self::MIN_AMOUNT) {
-                    $json['error'] = $this->language->get('error_amount') . ': ' . (self::MIN_AMOUNT / 100) . ' ' . $currency;
+                    $json['error'] = 'Минимальная сумма платежа: ' . (self::MIN_AMOUNT / 100) . ' ' . $currency;
                     $this->response->addHeader('Content-Type: application/json');
                     $this->response->setOutput(json_encode($json));
                     return;
@@ -80,61 +72,34 @@ class ControllerExtensionPaymentIpay extends Controller {
                 
                 $desc = $this->sanitizeDescription('Оплата заказа №' . $order_info['order_id']);
                 $info = json_encode(['order_id' => (int)$order_info['order_id']], JSON_UNESCAPED_UNICODE);
-
-                // Генерируем salt и подпись согласно официальной документации iPay API v1.14
-                // https://checkout.ipay.ua/doc - алгоритм подписи
-                $salt = sha1(microtime(true));
+                // Генерируем криптографически безопасный salt и подпись
+                $salt = bin2hex(random_bytes(32));
                 $sign = hash_hmac('sha512', $salt, $sign_key);
-
-                // Создаем XML запрос согласно структуре документации
+               // Create XML request
                 $xml = new SimpleXMLElement('<?xml version="1.0" encoding="utf-8"?><payment></payment>');
-                
-                // Элемент аутентификации
                 $auth = $xml->addChild('auth');
                 $auth->addChild('mch_id', $mch_id);
                 $auth->addChild('salt', $salt);
                 $auth->addChild('sign', $sign);
-                
-                // Элемент посилань
                 $urls = $xml->addChild('urls');
                 $urls->addChild('good', $this->url->link('checkout/success', '', true));
                 $urls->addChild('bad', $this->url->link('checkout/cart', '', true));
-                // Автоматическое перенаправление (новое в API v1.14)
                 $urls->addChild('auto_redirect_good', 1);
                 $urls->addChild('auto_redirect_bad', 1);
-                // Дополнительные кнопки (новое в API v1.14)
-                $urls->addChild('retry_button', 1);
-                $urls->addChild('cancel_button', 1);
-                
-                // Элемент транзакций
                 $transactions = $xml->addChild('transactions');
                 $transaction = $transactions->addChild('transaction');
                 $transaction->addChild('amount', $amount);
                 $transaction->addChild('currency', $currency);
                 $transaction->addChild('desc', $desc);
                 $transaction->addChild('info', htmlspecialchars($info, ENT_XML1, 'UTF-8'));
-                
-                // Время жизни платежа в часах (согласно документации)
                 $xml->addChild('lifetime', 24);
-                
-                // Язык интерфейса (ru/ua/en)
-                $current_lang = $this->session->data['language'] ?? 'ua';
-                if (strpos($current_lang, 'ru') !== false) {
-                    $lang = 'ru';
-                } elseif (strpos($current_lang, 'en') !== false) {
-                    $lang = 'en';
-                } else {
-                    $lang = 'ua';
-                }
-                $xml->addChild('lang', $lang);
-                
+                $xml->addChild('lang', $this->session->data['language'] == 'ru-ru' ? 'ru' : 'ua');
                 $xml_string = $xml->asXML();
-                
-                // Подготавливаем POST данные
+                // Prepare POST data
                 $post_data = http_build_query(['data' => $xml_string]);
 
                 if (self::IPAY_DEBUG_MODE) {
-                    $this->log->write("[iPay API v1.14] Запрос для заказа #" . $order_id . ": " . $post_data);
+                    $this->log->write("[iPay Debug] Запрос для заказа #" . $order_id . ": " . $post_data);
                 }
 
                 $ch = curl_init();
@@ -154,11 +119,8 @@ class ControllerExtensionPaymentIpay extends Controller {
                 curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
                 curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
                 curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
-                curl_setopt($ch, CURLOPT_USERAGENT, 'OpenCart-iPay-Module/2.0');
-                curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                    'Content-Type: application/x-www-form-urlencoded',
-                    'Expect:'
-                ]);
+                curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36');
+                curl_setopt($ch, CURLOPT_HTTPHEADER, ['Expect:']);
 
                 $response_xml = curl_exec($ch);
                 $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -174,7 +136,7 @@ class ControllerExtensionPaymentIpay extends Controller {
                 curl_close($ch);
 
                 if (self::IPAY_DEBUG_MODE) {
-                    $this->log->write("[iPay API v1.14] Ответ для заказа #" . $order_id . " (HTTP " . $http_code . "): " . $response_xml);
+                    $this->log->write("[iPay] Ответ для заказа #" . $order_id . " (HTTP " . $http_code . "): " . $response_xml);
                     if ($curl_error) {
                         $this->log->write("[iPay] cURL Ошибка для заказа #" . $order_id . ": " . $curl_error);
                     }
@@ -186,13 +148,13 @@ class ControllerExtensionPaymentIpay extends Controller {
                         $json['redirect'] = (string)$response->url;
                     } else {
                         $error_message = isset($response->message) ? (string)$response->message : 'Неверный ответ от шлюза.';
-                        $json['error'] = $this->language->get('error_api') . ': ' . $error_message;
+                        $json['error'] = 'Ошибка iPay: ' . $error_message;
                     }
                 } else {
-                    $json['error'] = $this->language->get('error_gateway');
+                    $json['error'] = 'Не удалось связаться со шлюзом iPay. Пожалуйста, попробуйте позже.';
                 }
             } else {
-                 $json['error'] = $this->language->get('error_order');
+                 $json['error'] = 'Ошибка: Заказ не найден.';
             }
         }
         
@@ -227,8 +189,8 @@ class ControllerExtensionPaymentIpay extends Controller {
     
     /**
      * Callback handler - обработчик уведомлений от iPay
-     * Согласно официальной документации iPay API v1.14
-     * https://checkout.ipay.ua/doc - структура нотификации
+    /**
+     * Callback handler - обработчик уведомлений от iPay
      * Этот метод вызывается iPay при изменении статуса платежа.
      * Проверяет подпись запроса, обновляет статус заказа и логирует результат.
      */
@@ -236,9 +198,8 @@ class ControllerExtensionPaymentIpay extends Controller {
         $request_body = file_get_contents('php://input');
         
         if (self::IPAY_DEBUG_MODE) {
-            $this->log->write('[iPay API v1.14] Callback Received: ' . $request_body);
+            $this->log->write('iPay Callback Received: ' . $request_body);
         }
-        
         // Проверяем безопасность - только HTTPS для продакшена
         if (!$this->config->get('payment_ipay_test_mode') && 
             (!isset($_SERVER['HTTPS']) || $_SERVER['HTTPS'] !== 'on')) {
@@ -275,8 +236,8 @@ class ControllerExtensionPaymentIpay extends Controller {
         }
 
         $sign_key = $this->config->get('payment_ipay_mch_key');
-        $received_salt = (string)$xml->auth->salt;
-        $received_sign = (string)$xml->auth->sign;
+        $received_salt = (string)$xml->salt;
+        $received_sign = (string)$xml->sign;
         $calculated_sign = hash_hmac('sha512', $received_salt, $sign_key);
 
         if (!hash_equals($received_sign, $calculated_sign)) {
@@ -289,90 +250,43 @@ class ControllerExtensionPaymentIpay extends Controller {
             exit('Signature mismatch');
         }
 
-        // Получаем order_id из поля info согласно документации
-        $order_id = null;
-        if (isset($xml->transactions->transaction->info)) {
-            $info = json_decode((string)$xml->transactions->transaction->info, true);
-            if (isset($info['order_id'])) {
-                $order_id = (int)$info['order_id'];
-            }
+        if (!isset($xml->order_id)) {
+             if (self::IPAY_DEBUG_MODE) $this->log->write('iPay Callback CRITICAL ERROR: order_id is missing in callback!');
+             http_response_code(400);
+             exit('order_id is missing');
         }
         
-        if (!$order_id) {
-            if (self::IPAY_DEBUG_MODE) {
-                $this->log->write('iPay Callback ERROR: order_id not found in transaction info');
-            }
-            http_response_code(400);
-            exit('order_id not found');
-        }
-        
+        $order_id = (int)$xml->order_id;
         $this->load->model('checkout/order');
         $order_info = $this->model_checkout_order->getOrder($order_id);
 
         if (!$order_info) {
-            if (self::IPAY_DEBUG_MODE) {
-                $this->log->write('iPay Callback ERROR: Order #' . $order_id . ' not found.');
-            }
+            if (self::IPAY_DEBUG_MODE) $this->log->write('iPay Callback ERROR: Order #' . $order_id . ' not found.');
             http_response_code(404);
             exit('Order not found');
         }
 
-        // Получаем данные согласно структуре нотификации в документации
         $payment_status_code = (int)$xml->status;
-        $payment_ident = isset($xml->ident) ? (string)$xml->ident : 'N/A';
-        $payment_amount = isset($xml->amount) ? (string)$xml->amount : '0';
-        $payment_currency = isset($xml->currency) ? (string)$xml->currency : 'UAH';
-        $payment_timestamp = isset($xml->timestamp) ? (int)$xml->timestamp : time();
-        $payment_type = isset($xml->payment_type) ? (string)$xml->payment_type : 'Manual';
-        
-        // Определяем статус заказа на основе кода статуса платежа
+        $pid = isset($xml->pid) ? (string)$xml->pid : 'N/A';
+        // Determine the order status based on the payment status code
         $status_name = '';
         switch ($payment_status_code) {
-            case 5: 
-                $status_name = 'Успешно'; 
-                $order_status_id = $this->config->get('payment_ipay_order_status_id'); 
-                $notify_customer = true; 
-                break;
-            case 4: 
-                $status_name = 'Неуспешно'; 
-                $order_status_id = $this->config->get('payment_ipay_order_failed_status_id'); 
-                $notify_customer = false; 
-                break;
-            case 3: 
-                $status_name = 'Авторизован'; 
-                $order_status_id = $order_info['order_status_id']; 
-                $notify_customer = false; 
-                break;
-            case 1: 
-                $status_name = 'Зарегистрирован'; 
-                $order_status_id = $order_info['order_status_id']; 
-                $notify_customer = false; 
-                break;
-            default: 
-                $status_name = 'Неизвестный статус (' . $payment_status_code . ')'; 
-                $order_status_id = $order_info['order_status_id']; 
-                $notify_customer = false;
+            case 5: $status_name = 'Успешно'; $order_status_id = $this->config->get('payment_ipay_order_status_id'); $notify_customer = true; break;
+            case 4: $status_name = 'Неуспешно'; $order_status_id = $this->config->get('payment_ipay_order_failed_status_id'); $notify_customer = false; break;
+            case 3: $status_name = 'Авторизован'; $order_status_id = $order_info['order_status_id']; $notify_customer = false; break;
+            case 1: $status_name = 'Зарегистрирован'; $order_status_id = $order_info['order_status_id']; $notify_customer = false; break;
+            default: $status_name = 'Неизвестный статус (' . $payment_status_code . ')'; $order_status_id = $order_info['order_status_id']; $notify_customer = false;
         }
         
-        $comment = "iPay Callback (API v1.14): \n" . 
-                   "Статус: " . $status_name . " (код " . $payment_status_code . ")\n" . 
-                   "ID платежа: " . $payment_ident . "\n" . 
-                   "Сумма: " . $payment_amount . " " . $payment_currency . "\n" . 
-                   "Время: " . date('Y-m-d H:i:s', $payment_timestamp) . "\n" .
-                   "Тип платежа: " . $payment_type;
+        $comment = "iPay Callback: \n" . "Статус: " . $status_name . " (код " . $payment_status_code . ")\n" . "ID платежа (pid): " . $pid;
 
         if ($order_info['order_status_id'] != $order_status_id || $payment_status_code < 4) {
              $this->model_checkout_order->addOrderHistory($order_id, $order_status_id, $comment, $notify_customer);
-             if (self::IPAY_DEBUG_MODE) {
-                 $this->log->write('iPay: Order #' . $order_id . ' status updated to ' . $status_name);
-             }
+             if (self::IPAY_DEBUG_MODE) $this->log->write('iPay: Order #' . $order_id . ' status updated to ' . $status_name);
         } else {
-             if (self::IPAY_DEBUG_MODE) {
-                 $this->log->write('iPay: Order #' . $order_id . ' status is already ' . $status_name . '. No update needed.');
-             }
+             if (self::IPAY_DEBUG_MODE) $this->log->write('iPay: Order #' . $order_id . ' status is already ' . $status_name . '. No update needed.');
         }
 
-        // Возвращаем OK согласно документации
         echo 'OK';
         exit();
     }
