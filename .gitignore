@@ -3,6 +3,8 @@
 !.gitignore
 !.htaccess
 !.editorconfig
+!.github/
+!.gitmessage
 
 # Системные файлы
 Thumbs.db
@@ -51,3 +53,16 @@ Desktop.ini
 /vendor/
 /composer.lock
 /package-lock.json
+
+# Файлы сборки релизов
+/build/
+/release-build/
+*.zip
+*.tar.gz
+/dist/
+
+# Локальные файлы разработки
+.env.local
+/logs/
+/temp/
+/backup/

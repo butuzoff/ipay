@@ -1,0 +1,126 @@
+name: Auto Release on Push to Main
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - '**.md'
+      - '.github/**'
+      - '.gitignore'
+
+jobs:
+  check-for-release:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+    
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      new_version: ${{ steps.version.outputs.new_version }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Check for release keywords in commits
+        id: check
+        run: |
+          # Проверяем последние коммиты на наличие ключевых слов для релиза
+          RECENT_COMMITS=$(git log --since="24 hours ago" --pretty=format:"%s" HEAD)
+          
+          SHOULD_RELEASE=false
+          
+          # Проверяем коммиты на ключевые слова
+          if echo "$RECENT_COMMITS" | grep -qE "(release|версия|version|v[0-9]+\.[0-9]+\.[0-9]+)"; then
+            SHOULD_RELEASE=true
+          fi
+          
+          # Проверяем количество накопленных изменений
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            COMMITS_SINCE_TAG=$(git rev-list $LAST_TAG..HEAD --count)
+            if [ "$COMMITS_SINCE_TAG" -ge 5 ]; then
+              SHOULD_RELEASE=true
+            fi
+          else
+            # Если тегов нет, создаем первый релиз при наличии функциональных коммитов
+            FUNC_COMMITS=$(git log --pretty=format:"%s" HEAD | grep -cE "(feat|fix|feature)" || echo "0")
+            if [ "$FUNC_COMMITS" -ge 3 ]; then
+              SHOULD_RELEASE=true
+            fi
+          fi
+          
+          echo "should_release=$SHOULD_RELEASE" >> $GITHUB_OUTPUT
+          echo "Should release: $SHOULD_RELEASE"
+      
+      - name: Calculate new version
+        id: version
+        if: steps.check.outputs.should_release == 'true'
+        run: |
+          # Получаем последний тег
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Last tag: $LAST_TAG"
+          
+          # Парсим версию
+          VERSION=${LAST_TAG#v}
+          IFS='.' read -ra VERSION_PARTS <<< "$VERSION"
+          MAJOR=${VERSION_PARTS[0]:-0}
+          MINOR=${VERSION_PARTS[1]:-0}
+          PATCH=${VERSION_PARTS[2]:-0}
+          
+          # Анализируем коммиты для определения типа версии
+          COMMITS_SINCE_TAG=""
+          if [ "$LAST_TAG" != "v0.0.0" ]; then
+            COMMITS_SINCE_TAG=$(git log --pretty=format:"%s" $LAST_TAG..HEAD)
+          else
+            COMMITS_SINCE_TAG=$(git log --pretty=format:"%s" HEAD)
+          fi
+          
+          # Определяем тип релиза
+          if echo "$COMMITS_SINCE_TAG" | grep -qE "(BREAKING|breaking|major)"; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif echo "$COMMITS_SINCE_TAG" | grep -qE "(feat|feature|minor)"; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+          
+          NEW_VERSION="v$MAJOR.$MINOR.$PATCH"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "New version: $NEW_VERSION"
+
+  create-auto-release:
+    needs: check-for-release
+    runs-on: ubuntu-latest
+    if: needs.check-for-release.outputs.should_release == 'true'
+    
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Create and push tag
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
+          NEW_VERSION="${{ needs.check-for-release.outputs.new_version }}"
+          
+          # Создаем тег
+          git tag -a "$NEW_VERSION" -m "Auto release $NEW_VERSION"
+          git push origin "$NEW_VERSION"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

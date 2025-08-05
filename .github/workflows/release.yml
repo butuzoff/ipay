@@ -1,0 +1,119 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+      pull-requests: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Получаем предыдущий тег
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+          
+          # Генерируем changelog
+          if [ -n "$PREVIOUS_TAG" ]; then
+            echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+            echo "## Изменения в ${{ steps.version.outputs.VERSION }}" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+            
+            # Получаем коммиты между тегами и группируем их
+            git log --pretty=format:"%s" $PREVIOUS_TAG..HEAD | while read commit; do
+              case "$commit" in
+                feat*|feature*)
+                  echo "### ✨ Новые возможности" >> changelog_temp.md
+                  echo "- $commit" >> changelog_temp.md
+                  ;;
+                fix*)
+                  echo "### 🐛 Исправления" >> changelog_temp.md  
+                  echo "- $commit" >> changelog_temp.md
+                  ;;
+                docs*)
+                  echo "### 📝 Документация" >> changelog_temp.md
+                  echo "- $commit" >> changelog_temp.md
+                  ;;
+                style*|refactor*)
+                  echo "### 🔧 Рефакторинг" >> changelog_temp.md
+                  echo "- $commit" >> changelog_temp.md
+                  ;;
+                perf*)
+                  echo "### ⚡ Производительность" >> changelog_temp.md
+                  echo "- $commit" >> changelog_temp.md
+                  ;;
+                test*)
+                  echo "### 🧪 Тестирование" >> changelog_temp.md
+                  echo "- $commit" >> changelog_temp.md
+                  ;;
+                *)
+                  echo "### 📦 Другие изменения" >> changelog_temp.md
+                  echo "- $commit" >> changelog_temp.md
+                  ;;
+              esac
+            done
+            
+            # Удаляем дубликаты заголовков и форматируем
+            if [ -f changelog_temp.md ]; then
+              awk '!seen[$0]++' changelog_temp.md >> $GITHUB_OUTPUT
+              rm changelog_temp.md
+            else
+              echo "- Различные улучшения и исправления" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+            echo "## Первый релиз ${{ steps.version.outputs.VERSION }}" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+            echo "### 🎉 Начальная версия" >> $GITHUB_OUTPUT
+            echo "- Модуль оплаты iPay.ua для OpenCart 3.x" >> $GITHUB_OUTPUT
+            echo "- Поддержка API iPay.ua 3.02" >> $GITHUB_OUTPUT
+            echo "- Тестовый и боевой режимы" >> $GITHUB_OUTPUT
+          fi
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: Create release archive
+        run: |
+          # Создаем архив с модулем для релиза
+          mkdir -p release-build
+          
+          # Копируем только необходимые файлы модуля
+          cp -r upload/ release-build/
+          cp README.md release-build/
+          
+          # Создаем архив
+          cd release-build
+          zip -r ../ipay-opencart-${{ steps.version.outputs.VERSION }}.zip .
+          cd ..
+          
+          # Создаем также tar.gz архив
+          tar -czf ipay-opencart-${{ steps.version.outputs.VERSION }}.tar.gz -C release-build .
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: "iPay OpenCart Module ${{ steps.version.outputs.VERSION }}"
+          body: ${{ steps.changelog.outputs.CHANGELOG }}
+          files: |
+            ipay-opencart-${{ steps.version.outputs.VERSION }}.zip
+            ipay-opencart-${{ steps.version.outputs.VERSION }}.tar.gz
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

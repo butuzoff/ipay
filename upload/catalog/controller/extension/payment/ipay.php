@@ -1,14 +1,28 @@
 <?php
+/**
+ * Контроллер оплаты iPay для OpenCart 3.x
+ * 
+ * @author flancer.eu
+ * @version 1.0.0
+ * @license MIT
+ */
 class ControllerExtensionPaymentIpay extends Controller {
-    // Default: false
-    // Set to true to enable debug mode, which logs additional information.
+    // Режим отладки - включите для логирования дополнительной информации
     const IPAY_DEBUG_MODE = false;
-    // ---------------------------
-    // API URLs
-    // ---------------------------
-    // Use the production URL for live transactions and the sandbox URL for testing.
+    
+    // API URL-адреса iPay
     const IPAY_API_URL = 'https://checkout.ipay.ua/api302';
     const IPAY_SANDBOX_API_URL = 'https://sandbox-checkout.ipay.ua/api302';
+    
+    // Таймауты для cURL соединений
+    const CURL_CONNECT_TIMEOUT = 10;
+    const CURL_TIMEOUT = 30;
+    
+    // Поддерживаемые валюты
+    const SUPPORTED_CURRENCIES = ['UAH', 'USD', 'EUR'];
+    
+    // Минимальная сумма платежа в копейках
+    const MIN_AMOUNT = 100;
 
     public function index() {
         $this->load->language('extension/payment/ipay');
@@ -39,11 +53,27 @@ class ControllerExtensionPaymentIpay extends Controller {
                 $total_in_default_currency = $this->currency->convert($order_total, $order_info['currency_code'], $this->config->get('config_currency'));
                 $amount = (int)round($total_in_default_currency * 100);
 
-                $currency = 'UAH';
-                $desc = 'Оплата заказа №' . $order_info['order_id'];
-                $info = json_encode(['order_id' => $order_info['order_id']]);
-                // Generate a unique salt and sign for security
-                $salt = sha1(microtime(true));
+                // Определяем валюту платежа
+                $currency = $this->getCurrency($order_info['currency_code']);
+                if (!$currency) {
+                    $json['error'] = 'Валюта ' . $order_info['currency_code'] . ' не поддерживается';
+                    $this->response->addHeader('Content-Type: application/json');
+                    $this->response->setOutput(json_encode($json));
+                    return;
+                }
+                
+                // Валидируем сумму платежа
+                if ($amount < self::MIN_AMOUNT) {
+                    $json['error'] = 'Минимальная сумма платежа: ' . (self::MIN_AMOUNT / 100) . ' ' . $currency;
+                    $this->response->addHeader('Content-Type: application/json');
+                    $this->response->setOutput(json_encode($json));
+                    return;
+                }
+                
+                $desc = $this->sanitizeDescription('Оплата заказа №' . $order_info['order_id']);
+                $info = json_encode(['order_id' => (int)$order_info['order_id']], JSON_UNESCAPED_UNICODE);
+                // Генерируем криптографически безопасный salt и подпись
+                $salt = bin2hex(random_bytes(32));
                 $sign = hash_hmac('sha512', $salt, $sign_key);
                // Create XML request
                 $xml = new SimpleXMLElement('<?xml version="1.0" encoding="utf-8"?><payment></payment>');
@@ -84,8 +114,11 @@ class ControllerExtensionPaymentIpay extends Controller {
                 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
                 curl_setopt($ch, CURLOPT_POST, true);
                 curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
-                curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-                curl_setopt($ch, CURLOPT_TIMEOUT, 20);
+                curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, self::CURL_CONNECT_TIMEOUT);
+                curl_setopt($ch, CURLOPT_TIMEOUT, self::CURL_TIMEOUT);
+                curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+                curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+                curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
                 curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36');
                 curl_setopt($ch, CURLOPT_HTTPHEADER, ['Expect:']);
 
@@ -128,18 +161,59 @@ class ControllerExtensionPaymentIpay extends Controller {
         $this->response->addHeader('Content-Type: application/json');
         $this->response->setOutput(json_encode($json));
     }
- // Callback handler
-    // This method is called by iPay when a payment status changes.
-    // It verifies the request, updates the order status, and logs the result.
-    // Make sure to set the correct URL in your iPay settings for this callback.
+    
+    /**
+     * Получение поддерживаемой валюты
+     */
+    private function getCurrency($currency_code) {
+        $currency_map = [
+            'UAH' => 'UAH',
+            'USD' => 'USD', 
+            'EUR' => 'EUR',
+            'RUB' => 'UAH', // Конвертируем в UAH
+        ];
+        
+        return isset($currency_map[$currency_code]) ? $currency_map[$currency_code] : null;
+    }
+    
+    /**
+     * Очистка описания от опасных символов
+     */
+    private function sanitizeDescription($description) {
+        // Удаляем HTML теги и опасные символы
+        $clean = strip_tags($description);
+        $clean = htmlspecialchars($clean, ENT_QUOTES, 'UTF-8');
+        // Ограничиваем длину
+        return mb_substr($clean, 0, 255, 'UTF-8');
+    }
+    
+    /**
+     * Callback handler - обработчик уведомлений от iPay
+    /**
+     * Callback handler - обработчик уведомлений от iPay
+     * Этот метод вызывается iPay при изменении статуса платежа.
+     * Проверяет подпись запроса, обновляет статус заказа и логирует результат.
+     */
     public function callback() {
         $request_body = file_get_contents('php://input');
         
         if (self::IPAY_DEBUG_MODE) {
             $this->log->write('iPay Callback Received: ' . $request_body);
         }
+        // Проверяем безопасность - только HTTPS для продакшена
+        if (!$this->config->get('payment_ipay_test_mode') && 
+            (!isset($_SERVER['HTTPS']) || $_SERVER['HTTPS'] !== 'on')) {
+            if (self::IPAY_DEBUG_MODE) {
+                $this->log->write('iPay Callback Security Error: HTTPS required for production');
+            }
+            http_response_code(400);
+            exit('HTTPS required');
+        }
+        
         if (!$request_body) {
-            if (self::IPAY_DEBUG_MODE) $this->log->write('iPay Callback Error: Request body is empty.');
+            if (self::IPAY_DEBUG_MODE) {
+                $this->log->write('iPay Callback Error: Request body is empty.');
+            }
             http_response_code(400);
             exit('Request body is empty.');
         }
@@ -148,7 +222,15 @@ class ControllerExtensionPaymentIpay extends Controller {
         $xml = simplexml_load_string($request_body);
 
         if ($xml === false || !isset($xml->status)) {
-            if (self::IPAY_DEBUG_MODE) $this->log->write('iPay Callback Error: Failed to parse XML or missing status field.');
+            if (self::IPAY_DEBUG_MODE) {
+                $this->log->write('iPay Callback Error: Failed to parse XML or missing status field.');
+                // Логируем ошибки парсинга XML
+                $errors = libxml_get_errors();
+                foreach ($errors as $error) {
+                    $this->log->write('XML Parse Error: ' . $error->message);
+                }
+                libxml_clear_errors();
+            }
             http_response_code(400);
             exit('XML Parse Error');
         }
@@ -158,8 +240,12 @@ class ControllerExtensionPaymentIpay extends Controller {
         $received_sign = (string)$xml->sign;
         $calculated_sign = hash_hmac('sha512', $received_salt, $sign_key);
 
-        if ($received_sign !== $calculated_sign) {
-            if (self::IPAY_DEBUG_MODE) $this->log->write('iPay Callback CRITICAL ERROR: Signature mismatch!');
+        if (!hash_equals($received_sign, $calculated_sign)) {
+            if (self::IPAY_DEBUG_MODE) {
+                $this->log->write('iPay Callback CRITICAL ERROR: Signature mismatch!');
+                $this->log->write('Expected: ' . $calculated_sign);
+                $this->log->write('Received: ' . $received_sign);
+            }
             http_response_code(403);
             exit('Signature mismatch');
         }
